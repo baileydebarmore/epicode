@@ -1,0 +1,146 @@
+
+**********************************************************
+*	Program Name:	Calculating SMR and IPTW in SAS
+*	Original date:	April 14 2019
+*	Author:		Bailey DeBarmore
+
+*	Downloaded from www.baileydebarmore.com/epicode
+**********************************************************;
+
+
+****************************************************************************************************************
+What is &let?
+So that you can easily adapt my code, I use &let statements at the beginning of my code blocks. 
+After the equals sign, you would replace <data> with your dataset name, <exposure> with your exposure variable, 
+and <outcome> with your outcome variable. The code as written will then run with those chosen variables. Note 
+that you do need to replace <covariates> in the model statement with your confounders.
+
+If you don't want to use &let statements, simply go through the code and anywhere you see &<text>, replace 
+both the & and the text with your regular code.
+****************************************************************************************************************;
+
+
+
+
+******************************************
+* Calculating SMR weights
+*****************************************;
+
+&let data=<data>;
+&let y=<outcome>;
+&let x=<exposure>;
+&let id=<id>;
+
+*Estimate the predicted probability given covariates;
+
+?proc logistic data=&data desc noprint;
+	model &x=<covariates>;
+	output out=pred p=p1;
+run;
+
+
+*Generate the weights by exposure status, for exposed group = target their weight will be 1;
+
+data <newdata>;
+	set pred;
+	
+	p0 = 1-p1;
+	odds = p1/p0;
+
+	if &x=1 then wt=1;
+		else wt=odds;
+run;
+
+
+*Final weighted analysis;
+
+proc logistic data=<newdata> desc noprint;
+	weight wt;
+	model &y = &x;
+run;
+
+
+******************************************
+* Calculating IPTW
+*****************************************;
+?
+&let data=<data>;
+&let y=<outcome>;
+&let x=<exposure>;
+&let id=<id>;
+
+*Estimate denominator - output a dataset with results of regression called denom,
+* with the resulting probabilities stored in variable d;
+?
+proc logistic data=&data desc noprint;
+model &x = <covariates>;
+output out=denom p=d;
+run;
+
+*Generate numerator for stabilized weights - output a dataset with results of regression called num, 
+*with the resulting probabilities stored in variable n - note that there is nothing on the right 
+*side of the equation because the numerator will simply be P(A=a), where a = observed exposure status;
+
+proc logistic data=&data desc noprint;
+model &x=;
+output out=num p=n;
+run;
+
+
+
+
+*Generate stabilized and unstabilized weights by merging the datasets with regression output 
+*(merge on the unique identifier in your dataset, &id);
+*Remember we can use 1 - P(exposed) for the unexposed weight components;
+?
+data <newdata>;
+	merge &data denom num;
+	by &id;
+
+	if &x=1 then do;
+		uw = 1/d; 
+		sw = n/d;
+	end;
+
+
+else if &x=0 then do;
+	uw=1/(1-d);
+	sw=(1-n)/(1-d);
+end;
+
+?run;
+
+
+
+
+
+*Check the distribution of your IPTW - the mean should be 1. Is the sum for uw twice the sum of sw? 
+*why? is the range of uw greater than sw? why?;
+
+proc means data=<newdata> mean sum min max;
+	var uw sw;
+run;
+
+
+
+*You can check to see if your exposure and covariates are associated in your new pseudopopulation (<newdata>);
+
+proc logistic data=<newdata> desc;
+	weight sw;
+	model &x=<covariates;
+run;
+
+
+
+
+
+*Now you can run your main analyses and apply the weights using the weight statement - 
+*use sw variable for stabilized weights, and use uw for unstabilized weights - 
+*you can use proc genmod, glm, logistic, etc. I'll show you below with logistic 
+*you can see now we're using &y and &x - and we don't need the covariates because the 
+*confounder -> x arrow is encompassed in the sw weight statement;
+
+proc logistic data=<newdata> desc;
+	weight sw;
+	model &y = &x;
+run;
